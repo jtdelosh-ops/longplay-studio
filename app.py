@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import shutil
 import sys
 import time
@@ -63,7 +64,7 @@ def download(url, folder, job):
         info = ydl.extract_info(url, download=True)
         if not info:
             raise ValueError('The video could not be downloaded.')
-        job['title'] = info.get('title', 'YouTube audio')
+        job['title'] = info.get('track') or info.get('title') or 'Longplay'
         path = Path(ydl.prepare_filename(info))
         if not path.is_file():
             raise ValueError('No audio was downloaded. Check the source length and availability.')
@@ -156,12 +157,22 @@ async def get_download(ident: str, inline: bool = False):
     info = export_info(ident)
     return FileResponse(DATA / ident / ('longplay.' + info['format']), media_type=info['mime_type'], filename=info['filename'], content_disposition_type='inline' if inline else 'attachment')
 
+def audio_filename(title, fmt):
+    # Preserve readable Unicode titles while supporting Windows and HTTP headers.
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', ' ', title or '')
+    stem = re.sub(r'\s+', ' ', stem).strip(' .')[:80].rstrip(' .') or 'Longplay'
+    base = stem.split('.')[0].rstrip().upper()
+    if base in {'CON', 'PRN', 'AUX', 'NUL'} or re.fullmatch(r'(COM|LPT)[1-9¹²³]', base):
+        stem = '_' + stem
+    return f'{stem}.{fmt}'
+
+
 def export_info(ident):
     job = jobs[ident]
     fmt = job.get('format', 'mp3')
     file = DATA / ident / ('longplay.' + fmt)
     return {'id': ident, 'format': fmt,
-            'filename': f'longplay-{job["minutes"]}min.{fmt}',
+            'filename': audio_filename(job.get('title'), fmt),
             'mime_type': 'audio/mp4' if fmt == 'm4a' else 'audio/mpeg',
             'duration_seconds': job['minutes'] * 60,
             'bytes': file.stat().st_size,

@@ -117,10 +117,32 @@ class IPhoneExportTests(unittest.TestCase):
             with patch.object(server,'DATA',root),patch.dict(server.jobs,{'test':job},clear=True):
                 manifest=asyncio.run(server.list_exports())
                 self.assertEqual(manifest[0]['mime_type'],'audio/mp4')
-                self.assertEqual(manifest[0]['filename'],'longplay-60min.m4a')
+                self.assertEqual(manifest[0]['filename'],'Rain.m4a')
                 self.assertEqual(manifest[0]['bytes'],4)
                 response=asyncio.run(server.get_download('test',True))
                 self.assertEqual(response.headers['content-type'],'audio/mp4')
                 self.assertIn('inline;',response.headers['content-disposition'])
+                self.assertIn('Rain.m4a',response.headers['content-disposition'])
                 response=asyncio.run(server.get_download('test'))
                 self.assertIn('attachment;',response.headers['content-disposition'])
+
+
+class AudioFilenameTests(unittest.TestCase):
+    def test_title_based_names_are_portable(self):
+        from app import audio_filename
+        cases = [
+            ('Rain at night', 'Rain at night'),
+            ('Artist: Song / Live?', 'Artist Song Live'),
+            ('Beyoncé – Déjà Vu', 'Beyoncé – Déjà Vu'),
+            ('Rain\r\nContent-Type: text/html', 'Rain Content-Type text html'),
+            ('CON', '_CON'),
+            ('NUL.song', '_NUL.song'),
+            ('lpt1', '_lpt1'),
+            ('... ', 'Longplay'),
+            (None, 'Longplay'),
+            ('x' * 120, 'x' * 80),
+        ]
+        for title, expected in cases:
+            for fmt in ('m4a', 'mp3'):
+                with self.subTest(title=title, fmt=fmt):
+                    self.assertEqual(audio_filename(title, fmt), expected + '.' + fmt)

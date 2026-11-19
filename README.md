@@ -59,7 +59,7 @@ The phone is the interface; your PC performs the conversion. Once the audio is d
 | **M4A** (default) | iPhone playback and audio transfer apps | AAC-LC, target 192 kbps, 44.1 kHz, stereo |
 | **MP3** | Broad compatibility with other players | MP3, 192 kbps, 44.1 kHz, stereo |
 
-M4A exports include streaming-friendly metadata placement. Both formats include title, artist, and album tags. At 192 kbps, allow roughly **86 MB per hour**, or **691 MB for eight hours**; actual sizes vary.
+M4A exports include streaming-friendly metadata placement. Downloads use the song title when available, otherwise the YouTube video title—for example, `Rain at night.m4a`. Characters that cannot appear in Windows filenames are cleaned up. Both formats include title, artist, and album tags. At 192 kbps, allow roughly **86 MB per hour**, or **691 MB for eight hours**; actual sizes vary.
 
 For another Codex project building a transfer app, see [the transfer integration guide](TRANSFER-APP-HANDOFF.txt). It documents supported files and the local export/download API. That separate app is not included in this repository.
 

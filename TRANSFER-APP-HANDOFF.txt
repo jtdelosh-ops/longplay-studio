@@ -29,7 +29,7 @@ Returns a JSON array of ready exports for the current server session:
     "id": "job-id",
     "title": "Video title",
     "format": "m4a",
-    "filename": "longplay-60min.m4a",
+    "filename": "Video title.m4a",
     "mime_type": "audio/mp4",
     "duration_seconds": 3600,
     "bytes": 86400000,
