@@ -17,16 +17,18 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / 'vendor'))
 import yt_dlp
-from looping import find_loop, prepare_loop
+from looping import command, find_loop, prepare_loop, preview_join
 
 DATA = ROOT / 'data'
 DATA.mkdir(exist_ok=True)
 app = FastAPI(title='Longplay')
 jobs = {}
+pending_choices = {}
 lock = asyncio.Lock()
 
 class Request(BaseModel):
     url: str
+    compare_loops: bool = False
     format: Literal['m4a', 'mp3'] = 'm4a'
     minutes: int = Field(default=60, ge=1, le=480)
 
@@ -70,18 +72,67 @@ def download(url, folder, job):
             raise ValueError('No audio was downloaded. Check the source length and availability.')
         return path
 
+async def select_points(source, folder, ident, job, points):
+    options = points['candidates'] or [
+        {key: points[key] for key in ('start', 'end', 'crossfade')}
+    ]
+    for index, option in enumerate(options):
+        await preview_join(source, folder / f'preview-{index}.m4a', option)
+    choice = asyncio.get_running_loop().create_future()
+    pending_choices[ident] = choice
+    job.update(status='awaiting_choice', options=options)
+    try:
+        index = await asyncio.wait_for(choice, timeout=15 * 60)
+        return {**points, **options[index]}
+    except asyncio.TimeoutError:
+        raise ValueError('Loop selection expired after 15 minutes. Start a new conversion.')
+    finally:
+        pending_choices.pop(ident, None)
+
+
+async def encoded_peak(destination):
+    report = await command(
+        'ffmpeg', '-nostats', '-hide_banner', '-loglevel', 'info', '-i', str(destination),
+        '-map', '0:a:0', '-af', 'ebur128=peak=true:framelog=verbose', '-f', 'null', '-',
+        timeout=3600, return_stderr=True)
+    match = re.search(rb'Peak:\s*(-?(?:\d+(?:\.\d+)?|inf)) dBFS', report)
+    if not match:
+        raise ValueError('Could not verify the peak level of the export.')
+    return float(match[1])
+
+
 async def render(source, destination, seconds, job):
-    loop = destination.with_suffix('.loop.flac')
+    loop = destination.with_suffix('.loop.wv')
     job['status'] = 'analyzing'
     points = await find_loop(source)
-    job['loop'] = points
+    if job.get('compare_loops'):
+        points = await select_points(source, destination.parent, destination.parent.name, job, points)
+    job.update(loop=points, status='rendering')
     await prepare_loop(source, loop, points)
-    job['status'] = 'rendering'
+    gain = 0.
+    try:
+        for _ in range(3):
+            job['status'] = 'rendering'
+            await encode(source, loop, destination, seconds, points, job, gain)
+            job['status'] = 'checking_peak'
+            peak = await encoded_peak(destination)
+            # FFmpeg reports tenths of a dB. Keep a margin for rounding.
+            if peak <= -1.1:
+                job.update(true_peak_dbtp=None if peak == float('-inf') else peak,
+                           gain_db=round(gain, 2))
+                return
+            gain -= peak + 1.4
+        raise ValueError('Could not verify enough peak headroom in the finished file.')
+    finally:
+        loop.unlink(missing_ok=True)
+
+
+async def encode(source, loop, destination, seconds, points, job, gain):
     encoding = (['-c:a', 'aac', '-profile:a', 'aac_low', '-movflags', '+faststart']
                 if destination.suffix == '.m4a' else ['-c:a', 'libmp3lame'])
     process = await asyncio.create_subprocess_exec('ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
         '-i', str(source), '-stream_loop', '-1', '-i', str(loop), '-t', str(seconds), '-vn',
-        '-filter_complex', f'[0:a]atrim=end={points["start"]+points["crossfade"]},asetpts=PTS-STARTPTS[intro];[intro][1:a]concat=n=2:v=0:a=1[out]', '-map', '[out]',
+        '-filter_complex', f'[0:a]atrim=end={points["start"]+points["crossfade"]},asetpts=PTS-STARTPTS[intro];[intro][1:a]concat=n=2:v=0:a=1,volume={gain:.4f}dB[out]', '-map', '[out]',
         *encoding, '-b:a', '192k', '-ar', '44100', '-ac', '2',
         '-metadata', 'title=' + job.get('title', 'Longplay'),
         '-metadata', 'artist=Longplay', '-metadata', 'album=Longplay Loops', '-progress', 'pipe:1', str(destination),
@@ -99,7 +150,6 @@ async def render(source, destination, seconds, job):
             process.kill()
             await process.wait()
         raise
-    loop.unlink(missing_ok=True)
     if process.returncode:
         raise ValueError('Audio rendering failed. Try another video.')
 
@@ -110,7 +160,6 @@ async def work(ident, url, minutes):
     try:
         job['status'] = 'downloading'
         source = await asyncio.to_thread(download, url, folder, job)
-        job['status'] = 'rendering'
         await render(source, folder / ('longplay.' + job.get('format', 'mp3')), minutes * 60, job)
         source.unlink(missing_ok=True)
         job.update(status='ready', progress=100)
@@ -134,12 +183,12 @@ async def create_job(request: Request):
             if job.get('finished', time.time()) < time.time() - 86400:
                 shutil.rmtree(DATA / ident, ignore_errors=True)
                 del jobs[ident]
-        if any(j['status'] in ('downloading', 'rendering', 'queued', 'analyzing') for j in jobs.values()):
+        if any(j['status'] in ('downloading', 'rendering', 'queued', 'analyzing', 'awaiting_choice', 'checking_peak') for j in jobs.values()):
             raise HTTPException(429, 'Another conversion is running. Please try again when it finishes.')
         if shutil.disk_usage(DATA).free < 2 * 1024**3:
             raise HTTPException(503, 'Not enough free disk space for a conversion.')
         ident = uuid.uuid4().hex
-        jobs[ident] = {'status': 'queued', 'progress': 0, 'minutes': request.minutes, 'format': request.format}
+        jobs[ident] = {'status': 'queued', 'progress': 0, 'minutes': request.minutes, 'format': request.format, 'compare_loops': request.compare_loops}
         asyncio.create_task(work(ident, url, request.minutes))
         return {'id': ident}
 
@@ -150,6 +199,36 @@ async def get_job(ident: str):
     if result['status'] == 'ready':
         result.update(export_info(ident))
     return result
+
+class LoopChoice(BaseModel):
+    index: int = Field(ge=0, le=2)
+
+
+@app.post('/api/jobs/{ident}/choose')
+async def choose_loop(ident: str, request: LoopChoice):
+    job = jobs.get(ident)
+    if job is None:
+        raise HTTPException(404, 'Conversion not found.')
+    choice = pending_choices.get(ident)
+    if choice is None or choice.done():
+        raise HTTPException(409, 'This conversion is no longer waiting for a loop.')
+    if request.index >= len(job['options']):
+        raise HTTPException(400, 'Select one of the available loops.')
+    choice.set_result(request.index)
+    job['status'] = 'rendering'
+    return {'selected': request.index}
+
+
+@app.get('/api/jobs/{ident}/preview/{index}')
+async def get_preview(ident: str, index: int):
+    job = jobs.get(ident)
+    if not job or not 0 <= index < len(job.get('options', [])):
+        raise HTTPException(404, 'Preview not found.')
+    preview = DATA / ident / f'preview-{index}.m4a'
+    if not preview.is_file():
+        raise HTTPException(404, 'Preview has expired.')
+    return FileResponse(preview, media_type='audio/mp4')
+
 
 @app.get('/api/jobs/{ident}/download')
 async def get_download(ident: str, inline: bool = False):

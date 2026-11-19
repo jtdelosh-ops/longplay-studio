@@ -10,7 +10,7 @@ import numpy as np
 
 HIGH_QUALITY_MAX_SECONDS = 30 * 60
 
-async def command(*args, timeout=900):
+async def command(*args, timeout=900, return_stderr=False):
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
@@ -21,7 +21,7 @@ async def command(*args, timeout=900):
         raise
     if proc.returncode:
         raise ValueError('Could not analyze or prepare the audio. Try another video.')
-    return out
+    return err if return_stderr else out
 
 async def probe_duration(source):
     duration = float((await command('ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', str(source))).strip())
@@ -56,31 +56,55 @@ async def find_beat_loop(source, duration):
         )
         candidates = await _run_beat_analysis(proxy)
 
-    if not candidates:
-        raise ValueError('No beat-aware loop candidates were found.')
+    options = rank_options(candidates, duration)
+    return {**options[0], 'method': 'beat-aware', 'candidates': options}
 
-    best = candidates[0]
-    if best['end'] - best['start'] < .25:
-        raise ValueError('The beat-aware loop candidate was too short.')
-    # PyMusicLooper already moves candidates to nearby zero crossings. A short
-    # blend protects against small differences introduced by proxy resampling
-    # without smearing a full beat.
-    fade = min(.12, (best['end'] - best['start']) / 8)
-    return {
-        'start': round(best['start'], 3),
-        'end': round(min(duration, best['end']), 3),
-        'crossfade': round(fade, 3),
-        'method': 'beat-aware',
-        'score': best['score'],
-        'candidates': [
-            {
-                'start': round(candidate['start'], 3),
-                'end': round(candidate['end'], 3),
-                'score': candidate['score'],
-            }
-            for candidate in candidates
-        ],
-    }
+
+def rank_options(candidates, duration):
+    """Prefer a meaningful length gain within a narrow musical-match band."""
+    valid = []
+    for candidate in candidates:
+        start, end, score = (candidate[k] for k in ('start', 'end', 'score'))
+        if not all(np.isfinite([start, end, score])) or not 0 <= start < end <= duration + .05:
+            continue
+        end = min(end, duration)
+        if end - start >= .25:
+            valid.append(dict(candidate, start=start, end=end))
+    if not valid:
+        raise ValueError('No usable beat-aware loop candidates were found.')
+
+    def length(option):
+        return option['end'] - option['start']
+
+    valid.sort(key=lambda option: option['score'], reverse=True)
+    strongest = valid[0]
+    close = [option for option in valid
+             if strongest['score'] - option['score'] <= .01
+             and option.get('loudness_difference', 0) <= strongest.get('loudness_difference', 0) + .25]
+    longest = max(close, key=length)
+    recommended = longest if length(longest) >= length(strongest) * 1.10 else strongest
+    choices = []
+    for option in [recommended, *valid]:
+        if any(abs(option['start'] - x['start']) < 1 and abs(option['end'] - x['end']) < 1
+               for x in choices):
+            continue
+        choices.append({key: round(option[key], 6) for key in ('start', 'end', 'score')})
+        choices[-1]['crossfade'] = round(min(.12, length(option) / 8), 3)
+        if len(choices) == 3:
+            break
+    return choices
+
+
+async def preview_join(source, destination, points):
+    start, end, fade = (points[k] for k in ('start', 'end', 'crossfade'))
+    window = min(5 + fade, (end - start) / 2)
+    filters = (f'[0:a]aresample=44100,atrim=duration={window},asetpts=PTS-STARTPTS[t];'
+               f'[1:a]aresample=44100,atrim=duration={window},asetpts=PTS-STARTPTS[h];'
+               f'[t][h]acrossfade=d={fade}:c1=tri:c2=tri[out]')
+    await command('ffmpeg', '-v', 'error', '-y', '-ss', str(end-window), '-i', str(source),
+                  '-ss', str(start), '-i', str(source), '-filter_complex', filters,
+                  '-map', '[out]', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart',
+                  str(destination))
 
 
 async def find_spectral_loop(source, duration=None):
@@ -138,7 +162,7 @@ async def prepare_loop(source, target, points):
     # The periodic file starts after the head overlap; the blended tail ends
     # exactly there. This avoids a second hard cut when the file repeats.
     filters = (
-        '[0:a]aresample=44100,asplit=3[m][t][h];'
+        '[0:a]aresample=44100,aformat=sample_fmts=fltp,asplit=3[m][t][h];'
         f'[m]atrim=start={s+f}:end={e-f},asetpts=PTS-STARTPTS[mid];'
         f'[t]atrim=start={e-f}:end={e},asetpts=PTS-STARTPTS[tail];'
         f'[h]atrim=start={s}:end={s+f},asetpts=PTS-STARTPTS[head];'
@@ -146,5 +170,7 @@ async def prepare_loop(source, target, points):
         f'[head]afade=t=in:st=0:d={f}[headfade];'
         '[tailfade][headfade]amix=inputs=2:duration=longest:normalize=0[blend];'
         '[mid][blend]concat=n=2:v=0:a=1[out]')
-    await command('ffmpeg','-v','error','-y','-i',str(source),'-filter_complex',filters,
-                  '-map','[out]','-c:a','flac',str(target))
+    # Float WavPack preserves decoded peaks above full scale until export gain is applied.
+    codec = ['-c:a', 'wavpack', '-sample_fmt', 'fltp'] if target.suffix == '.wv' else ['-c:a', 'flac']
+    await command('ffmpeg', '-v', 'error', '-y', '-i', str(source), '-filter_complex', filters,
+                  '-map', '[out]', *codec, str(target))

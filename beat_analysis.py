@@ -19,7 +19,7 @@ def analyze(path):
             'note_distance': round(float(pair.note_distance), 6),
             'loudness_difference': round(float(pair.loudness_difference), 6),
         }
-        for pair in pairs[:3]
+        for pair in pairs
     ]
 
 

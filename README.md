@@ -2,7 +2,7 @@
 
 **Turn a YouTube video into hours of looping audio, ready for your iPhone.**
 
-Paste a video link, choose a listening duration, and download an audio file. Longplay Studio looks for similar passages near the beginning and end, blends the loop transition, and preserves the original intro.
+Paste a video link, choose a listening duration, and download an audio file. Longplay Studio looks for musically similar passages, blends the loop transition, and preserves the original intro.
 
 It runs on your computer. You can use its web interface on that computer or from an iPhone connected to the same Wi-Fi.
 
@@ -11,7 +11,7 @@ It runs on your computer. You can use its web interface on that computer or from
 - Creates audio from **1 minute to 8 hours** long.
 - Uses beat, pitch/chroma, loudness, and passage similarity to select musical
   loop points, then applies a protective crossfade.
-- Shows the selected loop timestamps.
+- Lets you hear up to three loop transitions before exporting and shows the selected timestamps.
 - Exports **M4A/AAC for iPhone** or **MP3** at a target 192 kbps.
 - Includes a Windows launcher that prepares dependencies and opens your browser.
 - Provides progress tracking and a download list API for a separate transfer app.
@@ -68,11 +68,20 @@ For another Codex project building a transfer app, see [the transfer integration
 
 For tracks up to 30 minutes, Longplay Studio uses PyMusicLooper to detect beats
 throughout the track, compare pitch/chroma and loudness, score surrounding
-passages, and refine the selected points near zero crossings. Longplay keeps the
-three strongest candidates in the job result and automatically uses the best
-one. A short crossfade protects against tiny timing differences introduced
+passages, and refine the selected points near zero crossings. Longplay starts with the strongest match. It prefers a loop at least 10% longer
+when its similarity score is within 0.01 of the strongest and its loudness
+mismatch is within an additional 0.25 dB. These thresholds are heuristics. A short crossfade protects against tiny timing differences introduced
 during analysis. The original intro plays once, followed by the selected loop
 region.
+
+Select **Compare loop options before export** to hear up to three transitions.
+The join is near the middle of each preview. Choose **Use loop** to start the
+full export. Some tracks have only one option. The choice stays available for
+15 minutes, and you can return to it in the same browser.
+
+Longplay measures true peak on the finished AAC or MP3. If necessary, it
+renders again with a fixed gain reduction and measures the new file. This
+preserves the dynamics and leaves at least 1 dB of true-peak headroom.
 
 For longer tracks, or when beat analysis cannot find a reliable candidate, the
 app automatically falls back to its lightweight detector. That detector compares
@@ -90,7 +99,7 @@ intro, the output is simply trimmed to that duration.
 
 ## Install manually: Windows, macOS, or Linux
 
-You need **Python 3.11+**, **FFmpeg and FFprobe** available on your PATH, and internet access. FFmpeg must include its AAC encoder and `libmp3lame`.
+You need **Python 3.11+**, **FFmpeg and FFprobe** available on your PATH, and internet access. FFmpeg must include its AAC, MP3 (`libmp3lame`), and WavPack encoders and the `ebur128` filter.
 
 Clone the repository, then enter its folder:
 
@@ -136,8 +145,10 @@ Use the address printed by your launcher as the base URL.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/jobs` | Create a conversion using `url`, `minutes`, and optional `format` (`m4a` or `mp3`) |
+| `POST /api/jobs` | Create a conversion using `url`, `minutes`, and optional `format` (`m4a` or `mp3`) and `compare_loops` (default `false`) |
 | `GET /api/jobs/{id}` | Read status, progress, loop points, and finished export metadata |
+| `GET /api/jobs/{id}/preview/{index}` | Play a transition while choosing a loop (zero-based index) |
+| `POST /api/jobs/{id}/choose` | Submit `{"index": 0}` or another available index during `awaiting_choice` |
 | `GET /api/exports` | List finished files from the current server session |
 | `GET /api/jobs/{id}/download` | Download the file |
 | `GET /api/jobs/{id}/download?inline=true` | Play the file inline |
