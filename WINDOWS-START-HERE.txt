@@ -1,0 +1,30 @@
+LONGPLAY FOR WINDOWS 10 / 11
+
+1. Right-click the downloaded ZIP and choose Extract All.
+2. Open the extracted longplay folder.
+3. Double-click Start-Longplay.cmd.
+
+First launch installs Python 3.12 using Windows Package Manager if needed,
+creates a private Python environment, installs the app dependencies, and
+fetches a portable FFmpeg build from gyan.dev. Internet access is required.
+The browser opens automatically when the server is ready.
+Do not run the launcher from inside the ZIP.
+
+Keep the black terminal window open and your PC awake while converting.
+Close it or press Ctrl+C to stop the app. Double-click the launcher to start again.
+
+IPHONE
+Connect your iPhone and PC to the same trusted home Wi-Fi. The terminal
+prints your PC's addresses. Open the matching address in iPhone Safari.
+If Windows Firewall asks, allow Python on Private networks only.
+You do not need to forward a port on your router.
+Guest Wi-Fi or a VPN can prevent devices from reaching each other.
+
+Choose M4A for iPhone, download the completed audio, then select it in your
+transfer app. You can also save it to Files using the Share menu.
+
+If Python installation cannot start, install Python 3.12 manually from
+https://www.python.org/downloads/windows/ and run the launcher again.
+If Windows displays a security warning, review the included source scripts
+before deciding whether to run them. The launcher does not need administrator
+mode. This Windows launcher has not been executed on a Windows PC here.

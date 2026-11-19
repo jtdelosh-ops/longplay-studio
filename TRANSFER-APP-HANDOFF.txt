@@ -1,0 +1,61 @@
+LONGPLAY -> IPHONE TRANSFER APP
+
+For the Codex thread building the transfer app:
+
+Support importing and transferring these audio files without transcoding:
+- M4A container, AAC-LC, target 192 kbps, 44.1 kHz, stereo.
+  Extension: .m4a. HTTP content type: audio/mp4.
+- MP3, 192 kbps, 44.1 kHz, stereo.
+  Extension: .mp3. HTTP content type: audio/mpeg.
+Preserve the original filename and embedded title, artist, and album.
+The loop transitions are already baked into the exported file.
+
+Simple integration: let the user select a downloaded Longplay .m4a or .mp3
+on Windows and send that file through the transfer app's existing workflow.
+On iOS, store the imported file in the app's storage and play with AVPlayer
+or the app's existing audio player. Offer Save to Files / share-sheet export
+if desired. Do not assume that a transferred file appears in Apple Music.
+
+Optional direct integration from the transfer app's backend:
+BASE = Longplay's current URL, printed by the Windows launcher.
+The launcher prefers port 3000; another port is selected if that is occupied.
+If both backends run on the same PC, use http://127.0.0.1:PORT.
+If the phone connects directly, use the PC's LAN IP instead of localhost.
+
+GET BASE/api/exports
+Returns a JSON array of ready exports for the current server session:
+[
+  {
+    "id": "job-id",
+    "title": "Video title",
+    "format": "m4a",
+    "filename": "longplay-60min.m4a",
+    "mime_type": "audio/mp4",
+    "duration_seconds": 3600,
+    "bytes": 86400000,
+    "download_url": "/api/jobs/job-id/download",
+    "playback_url": "/api/jobs/job-id/download?inline=true"
+  }
+]
+The byte count above is illustrative; use the actual API response.
+Resolve returned URL paths against BASE. Download URL returns attachment;
+playback URL returns inline. Responses support byte-range requests for
+seeking and resumable transfer. Stream large downloads rather than loading
+an eight-hour file into memory. Copy the complete file before marking the
+transfer complete; handle expired files or server restarts by refreshing.
+The list only includes files whose jobs are still in server memory. Previously
+downloaded local files remain usable after Longplay restarts.
+
+GET BASE/api/jobs/ID
+Reports progress and, when ready, the same export metadata plus loop points.
+
+POST BASE/api/jobs
+JSON: {"url":"https://www.youtube.com/watch?v=VIDEO_ID","minutes":60,"format":"m4a"}
+Returns {"id":"job-id"}; poll GET /api/jobs/ID until status is ready/error.
+Only one conversion is supported at a time; handle HTTP 429.
+Format is optional and defaults to m4a. mp3 is also accepted.
+
+These APIs are for trusted local/private networks. Browser cross-origin access
+is not enabled. A backend can fetch them directly; use your app's backend for
+browser integration rather than disabling browser security. No integration
+with the separate transfer app has been implemented or verified yet.

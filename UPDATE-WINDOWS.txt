@@ -1,0 +1,18 @@
+UPDATE YOUR WORKING LONGPLAY INSTALLATION
+
+1. Stop Longplay by pressing Ctrl+C in its server window.
+2. Extract the downloaded ZIP into a temporary folder.
+3. Open the longplay folder inside the extracted ZIP.
+4. Copy its contents into your existing Longplay folder. Choose Replace for
+   matching files. Keep your existing .venv, tools, and data folders.
+5. Double-click Start-Longplay.cmd in your existing folder.
+6. Refresh the app in your browser (Ctrl+F5 on Windows).
+
+M4A is now the default format. Choose M4A for your iPhone, create a longplay,
+download it, and select that file in your transfer app.
+The other transfer app must support audio files; see TRANSFER-APP-HANDOFF.txt
+for instructions to give its Codex thread.
+
+The Windows launcher now checks 127.0.0.1 directly and leaves the server
+running if its browser connection check fails. It prefers port 3000.
+This launcher change has not been executed on Windows in this workspace.
