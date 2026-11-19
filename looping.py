@@ -1,6 +1,14 @@
-"""Find similar audio at both ends, then create a periodic lossless loop."""
+"""Find musically useful loop points, then create a periodic lossless loop."""
 import asyncio
+import json
+import logging
+import sys
+import tempfile
+from pathlib import Path
+
 import numpy as np
+
+HIGH_QUALITY_MAX_SECONDS = 30 * 60
 
 async def command(*args, timeout=900):
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -15,10 +23,69 @@ async def command(*args, timeout=900):
         raise ValueError('Could not analyze or prepare the audio. Try another video.')
     return out
 
-async def find_loop(source):
+async def probe_duration(source):
     duration = float((await command('ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', str(source))).strip())
     if not np.isfinite(duration) or duration < .1:
         raise ValueError('The audio is too short to loop.')
+    return duration
+
+
+async def _run_beat_analysis(proxy):
+    output = await command(
+        sys.executable,
+        str(Path(__file__).with_name('beat_analysis.py')),
+        str(proxy),
+        timeout=600,
+    )
+    return json.loads(output)
+
+
+async def find_beat_loop(source, duration):
+    """Run beat/chroma analysis on a compatible, memory-bounded audio proxy."""
+    if duration < 10:
+        raise ValueError('Source is too short for beat-aware analysis.')
+    if duration > HIGH_QUALITY_MAX_SECONDS:
+        raise ValueError('Source is too long for beat-aware analysis.')
+
+    with tempfile.TemporaryDirectory(prefix='longplay-analysis-') as folder:
+        proxy = Path(folder) / 'analysis.wav'
+        await command(
+            'ffmpeg', '-v', 'error', '-y', '-i', str(source), '-vn',
+            '-ac', '1', '-ar', '22050', '-c:a', 'pcm_s16le', str(proxy),
+            timeout=900,
+        )
+        candidates = await _run_beat_analysis(proxy)
+
+    if not candidates:
+        raise ValueError('No beat-aware loop candidates were found.')
+
+    best = candidates[0]
+    if best['end'] - best['start'] < .25:
+        raise ValueError('The beat-aware loop candidate was too short.')
+    # PyMusicLooper already moves candidates to nearby zero crossings. A short
+    # blend protects against small differences introduced by proxy resampling
+    # without smearing a full beat.
+    fade = min(.12, (best['end'] - best['start']) / 8)
+    return {
+        'start': round(best['start'], 3),
+        'end': round(min(duration, best['end']), 3),
+        'crossfade': round(fade, 3),
+        'method': 'beat-aware',
+        'score': best['score'],
+        'candidates': [
+            {
+                'start': round(candidate['start'], 3),
+                'end': round(candidate['end'], 3),
+                'score': candidate['score'],
+            }
+            for candidate in candidates
+        ],
+    }
+
+
+async def find_spectral_loop(source, duration=None):
+    """Fast fallback that compares spectral windows near both track edges."""
+    duration = duration if duration is not None else await probe_duration(source)
     fade = min(2., duration / 8)
     edge = min(60., duration * .2)
     # Short clips still receive a crossfade; feature matching needs several seconds.
@@ -48,7 +115,23 @@ async def find_loop(source):
             i, j = np.unravel_index(np.argmin(costs), costs.shape)
             start = float(i)*.1
             end = min(duration, duration-edge+float(j)*.1+fade)
-    return {'start': round(start, 3), 'end': round(end, 3), 'crossfade': round(fade, 3)}
+    return {
+        'start': round(start, 3),
+        'end': round(end, 3),
+        'crossfade': round(fade, 3),
+        'method': 'spectral-fallback',
+        'candidates': [],
+    }
+
+
+async def find_loop(source):
+    """Prefer musical beat/chroma analysis and fall back to edge matching."""
+    duration = await probe_duration(source)
+    try:
+        return await find_beat_loop(source, duration)
+    except Exception as error:
+        logging.warning('Beat-aware analysis unavailable; using spectral fallback: %s', error)
+        return await find_spectral_loop(source, duration)
 
 async def prepare_loop(source, target, points):
     s, e, f = (points[k] for k in ('start','end','crossfade'))

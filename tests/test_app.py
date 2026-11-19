@@ -29,7 +29,7 @@ class SmartLoopTests(unittest.TestCase):
     def test_matches_shared_tone_instead_of_unrelated_edges(self):
         import numpy as np
         import wave
-        from looping import find_loop
+        from looping import find_spectral_loop
         with tempfile.TemporaryDirectory() as folder:
             source = Path(folder)/'tones.wav'
             rate = 8000
@@ -38,10 +38,45 @@ class SmartLoopTests(unittest.TestCase):
             with wave.open(str(source),'wb') as audio:
                 audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(rate)
                 audio.writeframes((samples*32767).astype('<i2').tobytes())
-            points=asyncio.run(find_loop(source))
+            points=asyncio.run(find_spectral_loop(source))
             self.assertGreaterEqual(points['start'], 2.9)
             self.assertLessEqual(points['end'], 27.1)
             self.assertGreaterEqual(points['end'], 25.9)
+            self.assertEqual(points['method'], 'spectral-fallback')
+
+    def test_beat_aware_detector_returns_ranked_candidates(self):
+        from unittest.mock import patch
+        from looping import find_beat_loop
+        candidates = [
+            {'start': 8.125, 'end': 55.875, 'score': .98,
+             'note_distance': .01, 'loudness_difference': .02},
+            {'start': 12., 'end': 52., 'score': .94,
+             'note_distance': .02, 'loudness_difference': .03},
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder)/'source.wav'
+            subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i',
+                            'sine=frequency=440:duration=1',str(source)],check=True)
+            async def analyzed_candidates(*args, **kwargs):
+                return candidates
+            with patch('looping._run_beat_analysis', side_effect=analyzed_candidates):
+                points=asyncio.run(find_beat_loop(source,60))
+        self.assertEqual(points['method'],'beat-aware')
+        self.assertEqual(points['start'],8.125)
+        self.assertEqual(points['end'],55.875)
+        self.assertEqual(len(points['candidates']),2)
+        self.assertLessEqual(points['crossfade'],.12)
+
+    def test_detector_falls_back_when_beat_analysis_fails(self):
+        from unittest.mock import patch
+        from looping import find_loop
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder)/'source.wav'
+            subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i',
+                            'sine=frequency=440:duration=1',str(source)],check=True)
+            with patch('looping.find_beat_loop', side_effect=RuntimeError('unavailable')):
+                points=asyncio.run(find_loop(source))
+        self.assertEqual(points['method'],'spectral-fallback')
 
     def test_periodic_crossfade_removes_boundary_jump(self):
         import numpy as np

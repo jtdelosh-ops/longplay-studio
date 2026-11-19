@@ -9,7 +9,8 @@ It runs on your computer. You can use its web interface on that computer or from
 ## What it does
 
 - Creates audio from **1 minute to 8 hours** long.
-- Automatically selects loop points and applies a crossfade of up to two seconds.
+- Uses beat, pitch/chroma, loudness, and passage similarity to select musical
+  loop points, then applies a protective crossfade.
 - Shows the selected loop timestamps.
 - Exports **M4A/AAC for iPhone** or **MP3** at a target 192 kbps.
 - Includes a Windows launcher that prepares dependencies and opens your browser.
@@ -65,11 +66,27 @@ For another Codex project building a transfer app, see [the transfer integration
 
 ## How smart looping works
 
-Longplay Studio compares loudness and spectral patterns in passages within the first and last 20% of the source, searching up to 60 seconds at each end. It chooses similar passages, avoids silence when audible alternatives exist, and blends the end back into the beginning. The original intro plays once, followed by the selected loop region.
+For tracks up to 30 minutes, Longplay Studio uses PyMusicLooper to detect beats
+throughout the track, compare pitch/chroma and loudness, score surrounding
+passages, and refine the selected points near zero crossings. Longplay keeps the
+three strongest candidates in the job result and automatically uses the best
+one. A short crossfade protects against tiny timing differences introduced
+during analysis. The original intro plays once, followed by the selected loop
+region.
+
+For longer tracks, or when beat analysis cannot find a reliable candidate, the
+app automatically falls back to its lightweight detector. That detector compares
+loudness and spectral patterns within the first and last 20% of the source,
+searching up to 60 seconds at each end. The finished screen tells you which
+method was used, so a fallback is visible rather than silent.
 
 Short sources under ten seconds use their full extent with a shorter crossfade. A lossless intermediate loop is encoded into one continuous output file, avoiding separately encoded chunks at each repetition.
 
-This works best with steady music and ambience. Speech, changing rhythms, or contrasting sections can still have a noticeable transition. It does not perform beat tracking or guarantee an inaudible transition for every video. If your requested duration ends within the original intro, the output is simply trimmed to that duration.
+This works best with steady music and ambience. Speech, changing rhythms, or
+contrasting sections can still have a noticeable transition. Automatic scoring
+cannot guarantee that the mathematically strongest candidate is the most
+pleasant one to a listener. If your requested duration ends within the original
+intro, the output is simply trimmed to that duration.
 
 ## Install manually: Windows, macOS, or Linux
 
@@ -153,7 +170,11 @@ Install the dependencies and FFmpeg, then run:
 python -m unittest discover -s tests -v
 ```
 
-Tests synthesize their own audio; they do not download YouTube videos. They cover URL validation, loop matching, smooth joins, export duration, MP3 encoding, AAC/M4A metadata and fast-start layout, and transfer metadata/download headers. GitHub Actions runs the suite on Linux and Windows.
+Tests synthesize their own audio; they do not download YouTube videos. They cover
+URL validation, beat-aware candidate handling, automatic fallback, spectral loop
+matching, smooth joins, export duration, MP3 encoding, AAC/M4A metadata and
+fast-start layout, and transfer metadata/download headers. GitHub Actions runs
+the suite on Linux and Windows.
 
 The suite passed in the development Linux workspace. Automated tests do not establish physical iPhone playback or compatibility with a separate transfer app. The Windows launcher requires verification on a Windows machine.
 
@@ -162,12 +183,14 @@ The suite passed in the development Linux workspace. Automated tests do not esta
 ```text
 app.py                       API, conversion jobs, and downloads
 looping.py                   Audio matching and crossfade preparation
+beat_analysis.py             Isolated, cancellable beat/chroma analyzer
 static/index.html            Browser interface
 Start-Longplay.cmd            Windows entry point
 windows/Start-Longplay.ps1     Windows setup and launcher
 requirements.txt             Python dependencies
 tests/test_app.py            Audio and API response tests
 TRANSFER-APP-HANDOFF.txt       Integration details for a transfer app
+THIRD_PARTY_NOTICES.md         PyMusicLooper attribution and MIT license
 ```
 
 `data`, `tools`, Python environments, and downloaded dependencies are local runtime files and are excluded from Git.
